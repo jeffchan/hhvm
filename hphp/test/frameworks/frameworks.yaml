@@ -230,7 +230,7 @@
   phpmyadmin:
     url: https://github.com/phpmyadmin/phpmyadmin.git
     branch: master
-    commit: 993023de918c34673c96ef7d7f810baedd24d3d4
+    commit: 04bf71cce6018697c7718b043354a3d709ee6b8c
     install_root: phpmyadmin
     test_root: phpmyadmin
     config_file: phpmyadmin/phpunit.xml.nocoverage
