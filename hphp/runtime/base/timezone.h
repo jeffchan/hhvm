@@ -31,7 +31,16 @@ namespace HPHP {
 class Array;
 template <typename T> class SmartResource;
 
-typedef std::shared_ptr<timelib_tzinfo> TimeZoneInfo;
+struct TimeZoneInfoWrap {
+  int type;
+  union {
+    timelib_tzinfo    *tz;        /* TIMELIB_ZONETYPE_ID */
+    timelib_sll       utc_offset; /* TIMELIB_ZONETYPE_OFFSET */
+    timelib_abbr_info abbr;       /* TIMELIB_ZONETYPE_ABBR */
+  } tzi;
+};
+
+typedef std::shared_ptr<TimeZoneInfoWrap> TimeZoneInfo;
 typedef std::map<std::string, TimeZoneInfo> MapStringToTimeZoneInfo;
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -76,13 +85,18 @@ public:
   /**
    * Whether this represents a valid timezone.
    */
-  bool isValid() const { return get();}
+  bool isValid() const { return m_tzi.get(); };
 
   /**
    * Get timezone's name or abbreviation.
    */
   String name() const;
   String abbr(int type = 0) const;
+
+  /**
+   * Get timezone's type.
+   */
+  int zoneType() const { return m_tzi->type; };
 
   /**
    * Get offset from UTC at the specified timestamp under this timezone.
@@ -125,13 +139,21 @@ protected:
   /**
    * Returns raw pointer. For internal use only.
    */
-  timelib_tzinfo *get() const { return m_tzi.get();}
+  timelib_tzinfo *get() const {
+    if (m_tzi && m_tzi->type == TIMELIB_ZONETYPE_ID) {
+      return m_tzi->tzi.tz;
+    }
+    return NULL;
+  }
 
 private:
   struct tzinfo_deleter {
-    void operator()(timelib_tzinfo *tzi) {
+    void operator()(TimeZoneInfoWrap *tzi) {
       if (tzi) {
-        timelib_tzinfo_dtor(tzi);
+        if (tzi->type == TIMELIB_ZONETYPE_ID) {
+          timelib_tzinfo_dtor(tzi->tzi.tz);
+        }
+        free(tzi);
       }
     }
   };

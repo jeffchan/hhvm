@@ -94,7 +94,34 @@ TimeZoneInfo TimeZone::GetTimeZoneInfo(char* name, const timelib_tzdb* db) {
     return iter->second;
   }
 
-  TimeZoneInfo tzi(timelib_parse_tzfile(name, db), tzinfo_deleter());
+  timelib_time *t = timelib_time_ctor();
+  int dst, not_found;
+  auto tmp = strdup(name);
+  t->z = timelib_parse_zone(&tmp, &dst, t, &not_found, db, timelib_parse_tzfile);
+  free(tmp);
+
+  TimeZoneInfoWrap *wrap;
+  if (!not_found) {
+    wrap = (TimeZoneInfoWrap*) calloc(1, sizeof(TimeZoneInfoWrap));
+    wrap->type = t->zone_type;
+    switch (t->zone_type) {
+      case TIMELIB_ZONETYPE_ID:
+        wrap->tzi.tz = t->tz_info;
+        break;
+      case TIMELIB_ZONETYPE_OFFSET:
+        wrap->tzi.utc_offset = t->z;
+        break;
+      case TIMELIB_ZONETYPE_ABBR:
+        wrap->tzi.abbr.dst = t->dst;
+        wrap->tzi.abbr.abbr = strdup(t->tz_abbr);
+        wrap->tzi.abbr.utc_offset = t->z;
+        break;
+    }
+  }
+
+  timelib_time_dtor(t);
+
+  TimeZoneInfo tzi(wrap, tzinfo_deleter());
   if (tzi) {
     Cache[name] = tzi;
   }
@@ -103,7 +130,11 @@ TimeZoneInfo TimeZone::GetTimeZoneInfo(char* name, const timelib_tzdb* db) {
 
 timelib_tzinfo* TimeZone::GetTimeZoneInfoRaw(char* name,
                                              const timelib_tzdb* db) {
-  return GetTimeZoneInfo(name, db).get();
+  TimeZoneInfoWrap *wrap = GetTimeZoneInfo(name, db).get();
+  if (wrap) {
+    return wrap->tzi.tz;
+  }
+  return NULL;
 }
 
 bool TimeZone::IsValid(const String& name) {
@@ -209,53 +240,99 @@ TimeZone::TimeZone(const String& name) {
 }
 
 TimeZone::TimeZone(timelib_tzinfo *tzi) {
-  m_tzi = TimeZoneInfo(tzi, tzinfo_deleter());
+  
 }
 
 SmartResource<TimeZone> TimeZone::cloneTimeZone() const {
   if (!m_tzi) return NEWOBJ(TimeZone)();
-  return NEWOBJ(TimeZone)(timelib_tzinfo_clone(m_tzi.get()));
+  return NEWOBJ(TimeZone)(timelib_tzinfo_clone(get()));
 }
 
 String TimeZone::name() const {
   if (!m_tzi) return String();
-  return String(m_tzi->name, CopyString);
+  switch (m_tzi->type) {
+    case TIMELIB_ZONETYPE_ID:
+      return String(m_tzi->tzi.tz->name, CopyString);
+    case TIMELIB_ZONETYPE_OFFSET:
+      {
+      char *tmpstr = (char*) malloc(sizeof("UTC+05:00"));
+      timelib_sll utc_offset = m_tzi->tzi.utc_offset;
+      snprintf(tmpstr, sizeof("+05:00"), "%c%02d:%02d",
+               utc_offset > 0 ? '-' : '+',
+               abs(utc_offset / 60),
+               abs((utc_offset % 60)));
+      return String(tmpstr);
+      }
+    case TIMELIB_ZONETYPE_ABBR:
+      return String(m_tzi->tzi.abbr.abbr, CopyString);
+  }
+  return String();
 }
 
 String TimeZone::abbr(int type /* = 0 */) const {
   if (!m_tzi) return String();
-  return String(&m_tzi->timezone_abbr[m_tzi->type[type].abbr_idx], CopyString);
+  switch (m_tzi->type) {
+    case TIMELIB_ZONETYPE_ID:
+      {
+      timelib_tzinfo *tz = get(); 
+      return String(&tz->timezone_abbr[tz->type[type].abbr_idx], CopyString);
+      }
+    case TIMELIB_ZONETYPE_OFFSET:
+    case TIMELIB_ZONETYPE_ABBR:
+      return name();
+  }
+  return String();
 }
 
 int TimeZone::offset(int timestamp) const {
   if (!m_tzi) return 0;
-
-  timelib_time_offset *offset =
-    timelib_get_time_zone_info(timestamp, m_tzi.get());
-  int ret = offset->offset;
-  timelib_time_offset_dtor(offset);
-  return ret;
+  switch (m_tzi->type) {
+    case TIMELIB_ZONETYPE_ID:
+      {
+      timelib_time_offset *offset =
+        timelib_get_time_zone_info(timestamp, get());
+      int ret = offset->offset;
+      timelib_time_offset_dtor(offset);
+      return ret;
+      }
+    case TIMELIB_ZONETYPE_OFFSET:
+      return m_tzi->tzi.utc_offset * -60;
+    case TIMELIB_ZONETYPE_ABBR:
+      return (m_tzi->tzi.abbr.utc_offset - (m_tzi->tzi.abbr.dst*60)) * -60;
+  }
+  return 0;
 }
 
 bool TimeZone::dst(int timestamp) const {
   if (!m_tzi) return false;
 
-  timelib_time_offset *offset =
-    timelib_get_time_zone_info(timestamp, m_tzi.get());
-  bool ret = offset->is_dst;
-  timelib_time_offset_dtor(offset);
-  return ret;
+  switch (m_tzi->type) {
+    case TIMELIB_ZONETYPE_ID:
+      {
+      timelib_time_offset *offset =
+        timelib_get_time_zone_info(timestamp, get());
+      bool ret = offset->is_dst;
+      timelib_time_offset_dtor(offset);
+      return ret;
+      }
+    case TIMELIB_ZONETYPE_OFFSET:
+      return false;
+    case TIMELIB_ZONETYPE_ABBR:
+      return m_tzi->tzi.abbr.dst == 1;
+  }
+  return false;
 }
 
 Array TimeZone::transitions() const {
   Array ret;
-  if (m_tzi) {
-    for (unsigned int i = 0; i < m_tzi->timecnt; ++i) {
-      int index = m_tzi->trans_idx[i];
-      int timestamp = m_tzi->trans[i];
+  if (m_tzi && m_tzi->type == TIMELIB_ZONETYPE_ID) {
+    timelib_tzinfo *tz = get();
+    for (unsigned int i = 0; i < tz->timecnt; ++i) {
+      int index = tz->trans_idx[i];
+      int timestamp = tz->trans[i];
       DateTime dt(timestamp);
-      ttinfo &offset = m_tzi->type[index];
-      const char *abbr = m_tzi->timezone_abbr + offset.abbr_idx;
+      ttinfo &offset = tz->type[index];
+      const char *abbr = tz->timezone_abbr + offset.abbr_idx;
 
       ret.append(make_map_array(
         s_ts, timestamp,
@@ -271,13 +348,14 @@ Array TimeZone::transitions() const {
 
 Array TimeZone::getLocation() const {
   Array ret;
-  if (!m_tzi) return ret;
+  if (!m_tzi || m_tzi->type != TIMELIB_ZONETYPE_ID) return ret;
 
 #ifdef TIMELIB_HAVE_TZLOCATION
-  ret.set(s_country_code, String(m_tzi->location.country_code, CopyString));
-  ret.set(s_latitude,     m_tzi->location.latitude);
-  ret.set(s_longitude,    m_tzi->location.longitude);
-  ret.set(s_comments,     String(m_tzi->location.comments, CopyString));
+  timelib_tzinfo *tz = get();
+  ret.set(s_country_code, String(tz->location.country_code, CopyString));
+  ret.set(s_latitude,     tz->location.latitude);
+  ret.set(s_longitude,    tz->location.longitude);
+  ret.set(s_comments,     String(tz->location.comments, CopyString));
 #else
   throw NotImplementedException("timelib version too old");
 #endif

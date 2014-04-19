@@ -131,6 +131,7 @@ class c_DateTimeZone : public ExtObjectDataFlags<ObjectData::HasClone> {
   public: Array t_gettransitions();
   public: static Array ti_listabbreviations();
   public: static Array ti_listidentifiers();
+  public: Array t___debuginfo();
 
   // Helper for TimeZone -> c_DateTimeZone conversion
   public: static Object wrap(SmartResource<TimeZone> tz) {

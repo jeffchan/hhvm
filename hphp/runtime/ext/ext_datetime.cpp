@@ -346,6 +346,13 @@ Array c_DateTimeZone::ti_listidentifiers() {
   return TimeZone::GetNames();
 }
 
+Array c_DateTimeZone::t___debuginfo() {
+  return make_map_array(
+    s_timezone_type, m_tz->zoneType(),
+    s_timezone, m_tz->name()
+  );
+}
+
 c_DateTimeZone* c_DateTimeZone::Clone(ObjectData* obj) {
   c_DateTimeZone* dtz = static_cast<c_DateTimeZone*>(obj->cloneImpl());
   dtz->m_tz = static_cast<c_DateTimeZone*>(obj)->m_tz->cloneTimeZone();
